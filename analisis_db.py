@@ -21,6 +21,8 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from src.ui.ingestion_panel import render_ingestion_panel
+
 from src.data.cleaner import RENAME_MAP, parse_dates, parse_numerics, normalize_categoricals, add_derived_columns
 from src.data.loader import DataLoadError, read_csv_safely, validate_columns, resolve_data_path
 from src.data.normalizer import load_name_config, apply_name_normalization
@@ -148,6 +150,13 @@ with st.sidebar:
     if st.button("🔄 Recargar datos"):
         load_data.clear()
         st.rerun()
+
+with st.sidebar:
+    render_ingestion_panel(
+        csv_path=DEFAULT_DATA_PATH,
+        on_success_callback=load_data.clear,
+    )
+
 
 # -----------------------------------------------------------------------------
 # Carga con manejo global de errores
