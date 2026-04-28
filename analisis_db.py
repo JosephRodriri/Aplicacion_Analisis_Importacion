@@ -12,16 +12,23 @@ Ejecutar con:
     streamlit run streamlit_demo_importaciones.py
 """
 
-import json
 import logging
 import sys
 import traceback
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+
+from src.ui.ingestion_panel import render_ingestion_panel
+
+from src.data.cleaner import RENAME_MAP, parse_dates, parse_numerics, normalize_categoricals, add_derived_columns
+from src.data.loader import DataLoadError, read_csv_safely, validate_columns, resolve_data_path
+from src.data.normalizer import load_name_config, apply_name_normalization
+from src.domain.classifiers import load_product_rules, classify_product
+from src.domain.kpis import calculate_kpis
+from src.domain.risk_metrics import calculate_risk_metrics
 
 # -----------------------------------------------------------------------------
 # Logging (útil para ver errores también en la terminal)
@@ -47,16 +54,10 @@ FALLBACK_DATA_PATH = (
 )
 
 # Ruta al archivo JSON con configuración de alias y agrupaciones.
-CONFIG_JSON_PATH = Path(__file__).resolve().parent / "comp_principales.json"
+CONFIG_JSON_PATH = Path(__file__).resolve().parent / "src" / "config" / "comp_principales.json"
 
-# Columnas mínimas que el dataset DEBE tener para que el dashboard funcione.
-REQUIRED_COLUMNS = {
-    "Fecha de Presentación",
-    "Descripción de la partida arancelaria",
-    "Peso en kilos netos",
-    "Valor FOB (USD)",
-    "País de origen",
-}
+# Ruta al JSON de reglas de clasificación de productos.
+PRODUCTS_CONFIG_PATH = Path(__file__).resolve().parent / "src" / "config" / "products.json"
 
 st.set_page_config(
     page_title="Análisis de Importaciones de Maíz y Trigo",
@@ -71,185 +72,11 @@ TEMPLATE = "plotly_white"
 
 
 # -----------------------------------------------------------------------------
-# Normalización de nombres (importadores y proveedores)
-# -----------------------------------------------------------------------------
-def _load_name_config() -> dict:
-    """Carga el JSON de configuración de alias y agrupaciones.
-
-    Retorna un dict con las claves:
-      - nit_to_group: {nit_str: nombre_grupo}  (de comp_principales)
-      - importer_alias: {variante_title: nombre_canónico}  (de alias_importadores)
-      - supplier_alias: {variante_title: nombre_canónico}  (de alias_proveedores)
-    """
-    result: dict = {"nit_to_group": {}, "importer_alias": {}, "supplier_alias": {}}
-
-    if not CONFIG_JSON_PATH.is_file():
-        logger.warning("No se encontró %s — no se aplicará normalización.", CONFIG_JSON_PATH)
-        return result
-
-    try:
-        with open(CONFIG_JSON_PATH, encoding="utf-8") as fh:
-            raw = json.load(fh)
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.error("Error leyendo %s: %s", CONFIG_JSON_PATH, exc)
-        return result
-
-    # 1) comp_principales → mapa NIT→grupo
-    for group_name, nit_list in raw.get("comp_principales", {}).items():
-        for nit in nit_list:
-            result["nit_to_group"][str(nit).strip()] = group_name
-
-    # 2) alias_importadores → mapa variante→canónico
-    for canonical, variants in raw.get("alias_importadores", {}).items():
-        canonical_title = canonical.strip().title()
-        for v in variants:
-            result["importer_alias"][v.strip().title()] = canonical_title
-
-    # 3) alias_proveedores → mapa variante→canónico
-    for canonical, variants in raw.get("alias_proveedores", {}).items():
-        canonical_title = canonical.strip().title()
-        for v in variants:
-            result["supplier_alias"][v.strip().title()] = canonical_title
-
-    logger.info(
-        "Config cargada: %d NITs, %d alias importadores, %d alias proveedores.",
-        len(result["nit_to_group"]),
-        len(result["importer_alias"]),
-        len(result["supplier_alias"]),
-    )
-    return result
-
-
-def _normalize_names(df: pd.DataFrame, config: dict) -> pd.DataFrame:
-    """Aplica normalización de nombres de importadores y proveedores.
-
-    Pasos:
-      1. Reemplaza variantes conocidas de importador por el nombre canónico.
-      2. Si el NIT del importador pertenece a un grupo (comp_principales),
-         crea/actualiza la columna 'importer_group'.
-      3. Reemplaza variantes conocidas de proveedor por el nombre canónico.
-    """
-    # --- Importadores: alias por nombre ---
-    if "importer" in df.columns and config["importer_alias"]:
-        df["importer"] = df["importer"].replace(config["importer_alias"])
-
-    # --- Importadores: agrupación por NIT ---
-    if "importer_nit" in df.columns and config["nit_to_group"]:
-        nit_str = df["importer_nit"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
-        df["importer_group"] = nit_str.map(config["nit_to_group"]).fillna("Otros")
-    else:
-        df["importer_group"] = "Otros"
-
-    # --- Proveedores: alias por nombre ---
-    if "supplier" in df.columns and config["supplier_alias"]:
-        df["supplier"] = df["supplier"].replace(config["supplier_alias"])
-
-    return df
-
-
-# -----------------------------------------------------------------------------
-# Utilidades de error
-# -----------------------------------------------------------------------------
-class DataLoadError(Exception):
-    """Error controlado al cargar/validar el dataset."""
-
-    def __init__(self, message: str, hint: str | None = None):
-        super().__init__(message)
-        self.hint = hint
-
-
-def resolve_data_path(user_path: str | None) -> Path:
-    """Busca el CSV en varias rutas posibles y devuelve la primera que exista."""
-    candidates: list[Path] = []
-    if user_path:
-        candidates.append(Path(user_path).expanduser())
-    candidates.extend([DEFAULT_DATA_PATH, FALLBACK_DATA_PATH])
-
-    for c in candidates:
-        if c.is_file():
-            return c
-
-    tried = "\n".join(f"  • {c}" for c in candidates)
-    raise DataLoadError(
-        "No se encontró el archivo CSV.",
-        hint=(
-            "Rutas probadas:\n"
-            f"{tried}\n\n"
-            "Coloca el CSV en alguna de esas rutas o escribe la ruta "
-            "correcta en el campo 'Ruta del CSV' del sidebar."
-        ),
-    )
-
-
-def read_csv_safely(path: Path) -> pd.DataFrame:
-    """Lee el CSV probando encodings y separadores típicos."""
-    errors: list[str] = []
-    for encoding in ("utf-8", "utf-8-sig", "latin-1", "cp1252"):
-        for sep in (",", ";", "\t", "|"):
-            try:
-                df = pd.read_csv(
-                    path,
-                    low_memory=False,
-                    encoding=encoding,
-                    sep=sep,
-                    on_bad_lines="warn",
-                )
-                # Si solo hay 1 columna, probablemente el separador está mal
-                if df.shape[1] < 2:
-                    continue
-                logger.info(
-                    "CSV leído OK con encoding=%s, sep=%r, shape=%s",
-                    encoding, sep, df.shape,
-                )
-                return df
-            except UnicodeDecodeError as exc:
-                errors.append(f"{encoding}/{sep!r}: {exc.__class__.__name__}")
-                continue
-            except pd.errors.EmptyDataError as exc:
-                raise DataLoadError(
-                    "El archivo CSV está vacío.",
-                    hint=f"Archivo: {path}",
-                ) from exc
-            except pd.errors.ParserError as exc:
-                errors.append(f"{encoding}/{sep!r}: ParserError")
-                continue
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"{encoding}/{sep!r}: {exc.__class__.__name__}")
-                continue
-
-    raise DataLoadError(
-        "No se pudo leer el CSV con ningún encoding/separador conocido.",
-        hint=(
-            "Intentos fallidos:\n"
-            + "\n".join(f"  • {e}" for e in errors[:10])
-            + "\n\nRevisa que el archivo sea un CSV válido y no esté corrupto."
-        ),
-    )
-
-
-def validate_columns(df: pd.DataFrame) -> None:
-    """Valida que estén las columnas mínimas."""
-    missing = REQUIRED_COLUMNS - set(df.columns)
-    if missing:
-        raise DataLoadError(
-            f"Faltan columnas obligatorias en el CSV: {sorted(missing)}",
-            hint=(
-                "El dataset debe incluir al menos:\n"
-                + "\n".join(f"  • {c}" for c in sorted(REQUIRED_COLUMNS))
-                + f"\n\nColumnas detectadas ({len(df.columns)}): "
-                + ", ".join(df.columns[:15].tolist())
-                + ("..." if len(df.columns) > 15 else "")
-            ),
-        )
-
-
-# -----------------------------------------------------------------------------
 # Carga y limpieza
 # -----------------------------------------------------------------------------
 @st.cache_data(show_spinner="Cargando dataset de importaciones...")
 def load_data(path_str: str) -> tuple[pd.DataFrame, dict]:
-    """
-    Carga, valida y limpia el CSV.
+    """Carga, valida y limpia el CSV.
 
     Devuelve:
         - DataFrame listo para usar
@@ -261,151 +88,37 @@ def load_data(path_str: str) -> tuple[pd.DataFrame, dict]:
     df = read_csv_safely(path)
     diagnostics["rows_raw"] = len(df)
     diagnostics["cols_raw"] = len(df.columns)
-
     validate_columns(df)
 
-    # Renombro columnas relevantes a nombres cortos en inglés internos.
-    # Mantengo los originales que no se renombran (por si se quieren mostrar).
-    rename_map = {
-        "Mes": "month",
-        "Fecha de Presentación": "submission_date",
-        "Aduana": "customs",
-        "Régimen Importación": "regime",
-        "Regimen Importación": "regime",
-        "Tipo de importación": "import_type",
-        "Razón Social del Importador": "importer",
-        "NIT del Importador": "importer_nit",
-        "Departamento del Importador": "importer_dept",
-        "Descripción de la partida arancelaria": "tariff_description",
-        "Código Partida": "tariff_code",
-        "País de origen": "origin_country",
-        "País de procedencia": "source_country",
-        "País de compra": "purchase_country",
-        "Continente Origen": "origin_continent",
-        "Continente Compra": "purchase_continent",
-        "Proveedor": "supplier",
-        "Vía de transporte": "transport_mode",
-        "Peso en kilos netos": "net_weight_kg",
-        "Peso en kilos brutos": "gross_weight_kg",
-        "Valor FOB (USD)": "fob_usd",
-        "Valor CIF (USD)": "cif_usd",
-        "Valor FOB (COP)": "fob_cop",
-        "Valor CIF (COP)": "cif_cop",
-        "Fletes (USD)": "freight_usd",
-        "Valor seguro": "insurance_usd",
-        "Tasa de Cambio": "fx_rate",
-        "Forma de pago": "payment_type",
-        "Acuerdo de Tratamiento Arancelario": "trade_agreement",
-        "Total pagado": "total_paid_cop",
-        "IVA pagado": "vat_paid",
-        "Arancel Pagado": "tariff_paid",
-    }
-    df = df.rename(columns=rename_map)
+    df = df.rename(columns=RENAME_MAP)
+    df, invalid_dates = parse_dates(df)
+    diagnostics["invalid_dates"] = invalid_dates
 
-    # Fecha y año (tolerante a formatos mixtos)
-    try:
-        df["submission_date"] = pd.to_datetime(
-            df["submission_date"], errors="coerce", format="mixed", dayfirst=False,
-        )
-    except (ValueError, TypeError):
-        # Fallback para versiones antiguas de pandas sin format="mixed"
-        df["submission_date"] = pd.to_datetime(df["submission_date"], errors="coerce")
-
-    invalid_dates = df["submission_date"].isna().sum()
-    diagnostics["invalid_dates"] = int(invalid_dates)
     if invalid_dates == len(df):
         raise DataLoadError(
             "Ninguna fecha pudo ser parseada en 'Fecha de Presentación'.",
             hint="Revisa que la columna tenga fechas en un formato reconocible (YYYY-MM-DD, DD/MM/YYYY, etc.).",
         )
 
-    df["year"] = df["submission_date"].dt.year
-    df["month_num"] = df["submission_date"].dt.month
-    df["year_month"] = df["submission_date"].dt.to_period("M").dt.to_timestamp()
+    df, numeric_issues = parse_numerics(df)
+    diagnostics["numeric_conversion_issues"] = numeric_issues
 
-    # Numéricos: forzar tipo y limpiar (tolerante a strings con comas/puntos)
-    numeric_cols = [
-        "net_weight_kg", "gross_weight_kg",
-        "fob_usd", "cif_usd", "fob_cop", "cif_cop",
-        "freight_usd", "insurance_usd", "fx_rate",
-        "total_paid_cop", "vat_paid", "tariff_paid",
-    ]
-    numeric_conversion_issues: dict[str, int] = {}
-    for col in numeric_cols:
-        if col not in df.columns:
-            continue
-        before_nulls = df[col].isna().sum()
-        # Si es texto, limpio separadores de miles típicos antes de convertir
-        if df[col].dtype == object:
-            df[col] = (
-                df[col].astype(str)
-                .str.replace(r"[^\d\.\-,]", "", regex=True)
-                .str.replace(",", "", regex=False)
-            )
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-        new_nulls = df[col].isna().sum() - before_nulls
-        if new_nulls > 0:
-            numeric_conversion_issues[col] = int(new_nulls)
-    diagnostics["numeric_conversion_issues"] = numeric_conversion_issues
+    df = normalize_categoricals(df)
 
-    # Categóricas: rellenar nulos y normalizar strings
-    categorical_cols = [
-        "customs", "regime", "import_type", "importer", "importer_dept",
-        "tariff_description", "tariff_code", "origin_country", "source_country",
-        "purchase_country", "origin_continent", "purchase_continent",
-        "supplier", "transport_mode", "payment_type", "trade_agreement",
-    ]
-    for col in categorical_cols:
-        if col in df.columns:
-            df[col] = (
-                df[col].fillna("Sin información").astype(str).str.strip().str.title()
-            )
-
-    # Clasifico producto (maíz vs trigo vs otro) a partir de la descripción
-    def classify_product(desc: str) -> str:
-        d = str(desc).lower()
-        if "maíz" in d or "maiz" in d or "corn" in d:
-            return "Maíz"
-        if "trigo" in d or "wheat" in d:
-            return "Trigo"
-        if "soya" in d or "soja" in d:
-            return "Soya"
-        return "Otro"
-
+    # Clasificación de productos
+    product_rules = load_product_rules(PRODUCTS_CONFIG_PATH)
     if "tariff_description" in df.columns:
-        df["product"] = df["tariff_description"].apply(classify_product)
+        df["product"] = df["tariff_description"].apply(
+            lambda d: classify_product(d, product_rules)
+        )
     else:
         df["product"] = "Otro"
 
-    # Normalización de nombres (alias + agrupación por NIT)
-    name_config = _load_name_config()
-    df = _normalize_names(df, name_config)
+    # Normalización de nombres
+    name_config = load_name_config(CONFIG_JSON_PATH)
+    df = apply_name_normalization(df, name_config)
 
-    # Derivados (con guardas para evitar división por cero / columnas ausentes)
-    if "net_weight_kg" in df.columns:
-        df["net_weight_ton"] = df["net_weight_kg"] / 1000
-    else:
-        df["net_weight_ton"] = np.nan
-
-    if "fob_usd" in df.columns:
-        df["fob_musd"] = df["fob_usd"] / 1_000_000
-    else:
-        df["fob_musd"] = np.nan
-        df["fob_usd"] = np.nan
-
-    if "cif_usd" in df.columns:
-        df["cif_musd"] = df["cif_usd"] / 1_000_000
-    else:
-        df["cif_musd"] = np.nan
-        df["cif_usd"] = np.nan
-
-    # Precio implícito USD/ton (FOB) — evita div/0
-    with np.errstate(divide="ignore", invalid="ignore"):
-        df["price_usd_per_ton"] = np.where(
-            df["net_weight_ton"].fillna(0) > 0,
-            df["fob_usd"] / df["net_weight_ton"].replace(0, np.nan),
-            np.nan,
-        )
+    df = add_derived_columns(df)
 
     df_clean = df.dropna(subset=["year"]).copy()
     diagnostics["rows_clean"] = len(df_clean)
@@ -438,11 +151,18 @@ with st.sidebar:
         load_data.clear()
         st.rerun()
 
+with st.sidebar:
+    render_ingestion_panel(
+        csv_path=DEFAULT_DATA_PATH,
+        on_success_callback=load_data.clear,
+    )
+
+
 # -----------------------------------------------------------------------------
 # Carga con manejo global de errores
 # -----------------------------------------------------------------------------
 try:
-    resolved_path = resolve_data_path(user_path or None)
+    resolved_path = resolve_data_path(user_path or None, DEFAULT_DATA_PATH, FALLBACK_DATA_PATH)
     df, diag = load_data(str(resolved_path))
 except DataLoadError as exc:
     st.error(f"❌ Error cargando los datos: {exc}")
@@ -611,31 +331,37 @@ st.caption(
 # -----------------------------------------------------------------------------
 # KPIs
 # -----------------------------------------------------------------------------
-total_declaraciones = len(fdf)
-total_toneladas = fdf["net_weight_ton"].sum()
-total_fob_musd = fdf["fob_usd"].sum() / 1_000_000
-total_cif_musd = fdf["cif_usd"].sum() / 1_000_000
-precio_promedio = fdf["price_usd_per_ton"].replace([np.inf, -np.inf], np.nan).mean()
-top_origen = (
-    fdf.groupby("origin_country")["net_weight_ton"].sum().idxmax()
-    if not fdf.empty else "N/A"
-)
-fob_per_ton_kpi = fdf["fob_usd"].sum() / fdf["net_weight_ton"].sum()
-cfr_kpi = (fdf["fob_usd"].sum() + fdf["freight_usd"].sum()) / fdf["net_weight_ton"].sum()
+kpis = calculate_kpis(fdf)
+risk = calculate_risk_metrics(fdf)
 
-# --- Fila 1 de KPIs ---
+# --- Fila 1: Volumen y valor ---
 row1_1, row1_2, row1_3, row1_4 = st.columns(4)
-row1_1.metric("📄 Declaraciones", f"{total_declaraciones:,}")
-row1_2.metric("⚖️ Toneladas netas", f"{total_toneladas:,.0f}")
-row1_3.metric("💵 FOB total (M USD)", f"{total_fob_musd:,.1f}")
-row1_4.metric("💰 CIF total (M USD)", f"{total_cif_musd:,.1f}")
+row1_1.metric("📄 Declaraciones", f"{kpis.declaraciones:,}")
+row1_2.metric("⚖️ Toneladas netas", f"{kpis.toneladas:,.0f}")
+row1_3.metric("💵 FOB total (M USD)", f"{kpis.fob_total_musd:,.1f}")
+row1_4.metric("💰 CIF total (M USD)", f"{kpis.cif_total_musd:,.1f}")
 
-# --- Fila 2 de KPIs ---
+# --- Fila 2: Precios ---
 row2_1, row2_2, row2_3, row2_4 = st.columns(4)
-row2_1.metric("📊 Precio prom. por declaración", f"{precio_promedio:,.1f}")
-row2_2.metric("🌍 Top origen", top_origen)
-row2_3.metric("📊 FOB ponderado t", f"{fob_per_ton_kpi:,.1f}")
-row2_4.metric("🚢 CFR ponderado t", f"{cfr_kpi:,.1f}")
+row2_1.metric("📊 FOB ponderado/t", f"{kpis.fob_per_ton:,.1f}")
+row2_2.metric("🚢 CFR ponderado/t", f"{kpis.cfr_per_ton:,.1f}")
+row2_3.metric("📈 Δ precio 3m vs 12m", f"{risk.delta_precio_3m_vs_12m_pct:+.1f}%")
+row2_4.metric("📉 Volatilidad (CV)", f"{risk.precio_cv_pct:.1f}%")
+
+# --- Fila 3: Riesgo ---
+row3_1, row3_2, row3_3, row3_4 = st.columns(4)
+row3_1.metric(
+    "🌍 Top origen",
+    kpis.top_origen,
+    f"{kpis.top_origen_pct:.1f}% del volumen",
+)
+row3_2.metric(
+    "🎯 HHI orígenes",
+    f"{risk.hhi_origenes:,.0f}",
+    help="0-10000. >2500 = altamente concentrado.",
+)
+row3_3.metric("🚢 % logístico/FOB", f"{risk.pct_logistico_sobre_fob:.1f}%")
+row3_4.metric("📜 % con acuerdo", f"{risk.pct_bajo_acuerdo:.1f}%")
 
 st.markdown("---")
 

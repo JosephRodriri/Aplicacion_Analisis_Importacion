@@ -1,0 +1,101 @@
+{
+    "comp_principales": {
+        "HARINERA PARDO S.A.": [
+            "860005194"
+        ],
+        "MOLINOS DEL ATLANTICO": [
+            "802001105",
+            "890204199",
+            "800161555"
+        ],
+        "PRECOCIDOS DEL ORIENTE": [
+            "890205091"
+        ],
+        "NUTRESA": [
+            "860017055",
+            "891701595",
+            "811014994"
+        ],
+        "ORGANIZACION SOLARTE": [
+            "800146425",
+            "800145425"
+        ],
+        "ADM COLOMBIA": [
+            "900291798"
+        ],
+        "RAFAEL DEL CASTILLO": [
+            "890400372",
+            "900219353"
+        ],
+        "HARINERA DEL VALLE": [
+            "891300382"
+        ],
+        "INDUSTRIA DE HARINAS TULUA S.A.S": [
+            "800161538",
+            "860008386"
+        ],
+        "ORGANIZACION MAS": [
+            "830019403"
+        ],
+        "ICOHARINAS SAS": [
+            "890212673"
+        ],
+        "MOLINOS SAN MIGUEL": [
+            "890204396"
+        ],
+        "COLOMBINA": [
+            "817000705",
+            "890301884"
+        ],
+        "MOLINOS EL LOBO": [
+            "860400008"
+        ]
+    },
+    "alias_importadores": {
+        "Solla S.A": ["Solla S.A.", "Solla Sa", "Solla S A", "Solla S.A.S"],
+        "Italcol S.A": ["Italcol S.A.", "Italcol Sa", "Italcol S A"],
+        "Productora De Alimentos Concentrados Para Animales Contegral": [
+            "Productora De Alimentos Concentrados Para Animales - Contegr",
+            "Productora De Alimentos Concentrados Para Animales Contegr",
+            "Productora De Alimentos Concentrados Para Animales- Contegral",
+            "Productora De Alimentos Concentrados Para Animales -Contegral"
+        ],
+        "Italcol De Occidente S.A.": ["Italcol De Occidente S.A", "Italcol De Occidente Sa"],
+        "Alimentos Finca S.A.S.": ["Alimentos Finca S.A.S", "Alimentos Finca Sas"],
+        "C. I. Adm Colombia Ltda": ["C. I. Adm Colombia Ltda.", "C.I. Adm Colombia Ltda", "Ci Adm Colombia Ltda"],
+        "Grasas S.A.": ["Grasas S.A", "Grasas Sa"],
+        "Harinera Del Valle S.A.": ["Harinera Del Valle S.A", "Harinera Del Valle Sa", "Harinera Del Valle S. A."],
+        "Pollos El Bucanero S.A.": ["Pollos El Bucanero S.A", "Pollos El Bucanero Sa"],
+        "Ingredion Colombia S.A.": ["Ingredion Colombia S.A", "Ingredion Colombia Sa"],
+        "Avidesa Mac Pollo S.A.": ["Avidesa Mac Pollo S.A", "Avidesa Mac Pollo Sa", "Avidesa Macpollo S.A."],
+        "Avidesa De Occidente S.A.": ["Avidesa De Occidente S.A", "Avidesa De Occidente S A"],
+        "Incubadora Santander S.A.": ["Incubadora Santander S.A", "Incubadora Santander S A"],
+        "Seaboard Overseas Colombia Sas": ["Seaboard Overseas Colombia S.A.S", "Seaboard Overseas Colombia S.A.S."]
+    },
+    "alias_proveedores": {
+        "Seaboard Overseas Limited": ["Seaboard Overseas Ltd", "Seaboard Overseas Ltd."],
+        "Cai Trading Llc": ["Cai Trading, Llc", "Cai Trading,Llc", "Cai Trading Llc."],
+        "Bunge Latin America Llc": [
+            "Bunge Latin America, Llc",
+            "Bunge Latin America,Llc",
+            "Bunge Latin America Llc.",
+            "Bunge Latin America, Llc.",
+            "Bunge Latin Americallc",
+            "Bunge Latin Americallc.",
+            "Bunge Latin America,Llc."
+        ],
+        "Adm Americas S. De R.L.": [
+            "Adm Americas S De R.L.",
+            "Adm Americas S De R.L",
+            "Adm Americas S. De R.L",
+            "Adm Americas S.De R.L."
+        ],
+        "Bunge Agritrade S.A.": ["Bunge Agritrade S.A", "Bunge Agritrade Sa"],
+        "Concordia Agritrading Pte Ltd": ["Concordia Agritrading Pte Ltd.", "Concordia Agritrading Pte. Ltd"],
+        "Interamericas Commodities Trading Inc": [
+            "Interamericas Commodities Trading Inc.",
+            "Interamericas Commodities Trading, Inc"
+        ],
+        "Graneles De Chile S.A.": ["Graneles De Chile S.A", "Graneles De Chile Sa"]
+    }
+}
