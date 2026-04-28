@@ -12,7 +12,6 @@ Ejecutar con:
     streamlit run streamlit_demo_importaciones.py
 """
 
-import json
 import logging
 import sys
 import traceback
@@ -22,6 +21,8 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+
+from src.domain.classifiers import load_product_rules, classify_product
 
 # -----------------------------------------------------------------------------
 # Logging (útil para ver errores también en la terminal)
@@ -47,7 +48,10 @@ FALLBACK_DATA_PATH = (
 )
 
 # Ruta al archivo JSON con configuración de alias y agrupaciones.
-CONFIG_JSON_PATH = Path(__file__).resolve().parent / "comp_principales.json"
+CONFIG_JSON_PATH = Path(__file__).resolve().parent / "src" / "config" / "comp_principales.json"
+
+# Ruta al JSON de reglas de clasificación de productos.
+PRODUCTS_CONFIG_PATH = Path(__file__).resolve().parent / "src" / "config" / "products.json"
 
 # Columnas mínimas que el dataset DEBE tener para que el dashboard funcione.
 REQUIRED_COLUMNS = {
@@ -362,18 +366,11 @@ def load_data(path_str: str) -> tuple[pd.DataFrame, dict]:
             )
 
     # Clasifico producto (maíz vs trigo vs otro) a partir de la descripción
-    def classify_product(desc: str) -> str:
-        d = str(desc).lower()
-        if "maíz" in d or "maiz" in d or "corn" in d:
-            return "Maíz"
-        if "trigo" in d or "wheat" in d:
-            return "Trigo"
-        if "soya" in d or "soja" in d:
-            return "Soya"
-        return "Otro"
-
+    product_rules = load_product_rules(PRODUCTS_CONFIG_PATH)
     if "tariff_description" in df.columns:
-        df["product"] = df["tariff_description"].apply(classify_product)
+        df["product"] = df["tariff_description"].apply(
+            lambda d: classify_product(d, product_rules)
+        )
     else:
         df["product"] = "Otro"
 
