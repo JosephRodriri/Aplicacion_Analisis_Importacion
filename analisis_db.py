@@ -23,6 +23,8 @@ import plotly.express as px
 import streamlit as st
 
 from src.domain.classifiers import load_product_rules, classify_product
+from src.domain.kpis import calculate_kpis
+from src.domain.risk_metrics import calculate_risk_metrics
 
 # -----------------------------------------------------------------------------
 # Logging (útil para ver errores también en la terminal)
@@ -608,31 +610,37 @@ st.caption(
 # -----------------------------------------------------------------------------
 # KPIs
 # -----------------------------------------------------------------------------
-total_declaraciones = len(fdf)
-total_toneladas = fdf["net_weight_ton"].sum()
-total_fob_musd = fdf["fob_usd"].sum() / 1_000_000
-total_cif_musd = fdf["cif_usd"].sum() / 1_000_000
-precio_promedio = fdf["price_usd_per_ton"].replace([np.inf, -np.inf], np.nan).mean()
-top_origen = (
-    fdf.groupby("origin_country")["net_weight_ton"].sum().idxmax()
-    if not fdf.empty else "N/A"
-)
-fob_per_ton_kpi = fdf["fob_usd"].sum() / fdf["net_weight_ton"].sum()
-cfr_kpi = (fdf["fob_usd"].sum() + fdf["freight_usd"].sum()) / fdf["net_weight_ton"].sum()
+kpis = calculate_kpis(fdf)
+risk = calculate_risk_metrics(fdf)
 
-# --- Fila 1 de KPIs ---
+# --- Fila 1: Volumen y valor ---
 row1_1, row1_2, row1_3, row1_4 = st.columns(4)
-row1_1.metric("📄 Declaraciones", f"{total_declaraciones:,}")
-row1_2.metric("⚖️ Toneladas netas", f"{total_toneladas:,.0f}")
-row1_3.metric("💵 FOB total (M USD)", f"{total_fob_musd:,.1f}")
-row1_4.metric("💰 CIF total (M USD)", f"{total_cif_musd:,.1f}")
+row1_1.metric("📄 Declaraciones", f"{kpis.declaraciones:,}")
+row1_2.metric("⚖️ Toneladas netas", f"{kpis.toneladas:,.0f}")
+row1_3.metric("💵 FOB total (M USD)", f"{kpis.fob_total_musd:,.1f}")
+row1_4.metric("💰 CIF total (M USD)", f"{kpis.cif_total_musd:,.1f}")
 
-# --- Fila 2 de KPIs ---
+# --- Fila 2: Precios ---
 row2_1, row2_2, row2_3, row2_4 = st.columns(4)
-row2_1.metric("📊 Precio prom. por declaración", f"{precio_promedio:,.1f}")
-row2_2.metric("🌍 Top origen", top_origen)
-row2_3.metric("📊 FOB ponderado t", f"{fob_per_ton_kpi:,.1f}")
-row2_4.metric("🚢 CFR ponderado t", f"{cfr_kpi:,.1f}")
+row2_1.metric("📊 FOB ponderado/t", f"{kpis.fob_per_ton:,.1f}")
+row2_2.metric("🚢 CFR ponderado/t", f"{kpis.cfr_per_ton:,.1f}")
+row2_3.metric("📈 Δ precio 3m vs 12m", f"{risk.delta_precio_3m_vs_12m_pct:+.1f}%")
+row2_4.metric("📉 Volatilidad (CV)", f"{risk.precio_cv_pct:.1f}%")
+
+# --- Fila 3: Riesgo ---
+row3_1, row3_2, row3_3, row3_4 = st.columns(4)
+row3_1.metric(
+    "🌍 Top origen",
+    kpis.top_origen,
+    f"{kpis.top_origen_pct:.1f}% del volumen",
+)
+row3_2.metric(
+    "🎯 HHI orígenes",
+    f"{risk.hhi_origenes:,.0f}",
+    help="0-10000. >2500 = altamente concentrado.",
+)
+row3_3.metric("🚢 % logístico/FOB", f"{risk.pct_logistico_sobre_fob:.1f}%")
+row3_4.metric("📜 % con acuerdo", f"{risk.pct_bajo_acuerdo:.1f}%")
 
 st.markdown("---")
 
